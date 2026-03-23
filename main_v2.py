@@ -65,10 +65,6 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── CORS ─────────────────────────────────────────────────────
-# Em produção: ALLOWED_ORIGINS deve conter APENAS a URL do seu Next.js no Vercel.
-# O browser nunca chega aqui diretamente — apenas o servidor Next.js chega.
-# Logo, a origem que o Railway vê é o IP/domínio do Vercel (server-side).
-# Para server-to-server no Vercel, pode usar "*" ou a URL exata do deploy.
 ALLOWED_ORIGINS = [
     o.strip()
     for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001").split(",")
@@ -113,11 +109,6 @@ API_SECRET = os.getenv("API_SECRET", "")
 
 
 def verificar_secret(request: Request):
-    """
-    Valida o header X-API-Secret.
-    Em desenvolvimento (ENVIRONMENT=development) sem secret configurado, libera.
-    Em produção, secret ausente no servidor é erro de configuração (500).
-    """
     if not API_SECRET:
         if os.getenv("ENVIRONMENT", "production") == "development":
             return
@@ -134,25 +125,18 @@ def verificar_secret(request: Request):
 
 
 # ══════════════════════════════════════════════════════════════
-# SCHEMAS  (espelham os tipos em src/types/integracoes.types.ts)
+# SCHEMAS
 # ══════════════════════════════════════════════════════════════
 
 class ClassificarRequest(BaseModel):
-    descricao: str = Field(..., min_length=2, max_length=500,
-                           description="Descrição do produto ou serviço")
-    tipo: Literal["produto", "servico"] = Field(...,
-                                                description="'produto' para NCM ou 'servico' para NBS")
-    provedor: Optional[Literal["anthropic", "openai"]] = Field(
-        None,
-        description="Provedor de IA. Se omitido, usa PROVEDOR_ATIVO do servidor."
-    )
+    descricao: str = Field(..., min_length=2, max_length=500)
+    tipo: Literal["produto", "servico"]
+    provedor: Optional[Literal["anthropic", "openai"]] = Field(None)
 
 
 class TestarConexaoRequest(BaseModel):
     provedor: Literal["anthropic", "openai"]
-    # api_key opcional: permite testar key nova sem salvar no servidor.
-    # O frontend v2 não envia api_key por padrão (segurança extra).
-    api_key: Optional[str] = Field(None, description="Key temporária para teste. Omita para usar a do servidor.")
+    api_key: Optional[str] = Field(None)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -378,7 +362,6 @@ async def chamar_openai(prompt: str, api_key: str = None) -> dict:
 
 
 async def classificar_com_fallback(prompt: str, provedor: str) -> tuple:
-    """Tenta provedor principal; se falhar, tenta o outro automaticamente."""
     outro = "openai" if provedor == "anthropic" else "anthropic"
     provedores = [provedor]
 
@@ -409,10 +392,6 @@ async def classificar_com_fallback(prompt: str, provedor: str) -> tuple:
 
 @app.get("/health", tags=["Status"])
 async def health():
-    """
-    Status do serviço. Público — sem X-API-Secret.
-    Consumido por: /api/ia/status/route.ts
-    """
     return {
         "status": "ok",
         "servico": "Integracoes_IA",
@@ -431,20 +410,11 @@ async def health():
         },
         "provedor_ativo": os.getenv("PROVEDOR_ATIVO", "anthropic")
     }
-    # Nota v2: "origens_permitidas" removido do health — não expor config interna
 
 
 @app.post("/classificar", tags=["Tributário"], dependencies=[Depends(verificar_secret)])
 @limiter.limit("30/minute")
 async def classificar(request: Request, body: ClassificarRequest):
-    """
-    Classifica um produto ou serviço conforme LC 214/2025.
-    Exige header: X-API-Secret
-    Consumido por: /api/ia/classificar/route.ts
-
-    Resposta espelha RespostaClassificacao (integracoes.types.ts):
-      { sucesso, provedor, fallback?, tipo, resultado, cache }
-    """
     provedor = body.provedor or os.getenv("PROVEDOR_ATIVO", "anthropic")
     cache_key = make_cache_key(body.descricao, body.tipo, provedor)
 
@@ -477,16 +447,6 @@ async def classificar(request: Request, body: ClassificarRequest):
 @app.post("/classificar/lote", tags=["Tributário"], dependencies=[Depends(verificar_secret)])
 @limiter.limit("5/minute")
 async def classificar_lote(request: Request, body: List[ClassificarRequest]):
-    """
-    Classifica múltiplos itens (máx. 50).
-    Delay de 500ms entre requisições para respeitar rate limits das APIs.
-    Itens em cache retornam sem nova chamada à IA (custo zero).
-    Exige header: X-API-Secret
-    Consumido por: /api/ia/classificar-lote/route.ts
-
-    Resposta espelha RespostaLote (integracoes.types.ts):
-      { total, sucesso, erros, do_cache, chamadas_ia, resultados[] }
-    """
     if len(body) > 50:
         raise HTTPException(status_code=400, detail="Máximo 50 itens por lote")
 
@@ -553,17 +513,6 @@ async def classificar_lote(request: Request, body: List[ClassificarRequest]):
 @app.post("/testar-conexao", tags=["Configuração"], dependencies=[Depends(verificar_secret)])
 @limiter.limit("10/minute")
 async def testar_conexao(request: Request, body: TestarConexaoRequest):
-    """
-    Testa se a API Key é válida.
-    Exige header: X-API-Secret
-    Consumido por: /api/ia/testar-conexao/route.ts
-
-    O frontend v2 não envia api_key por padrão — testa a key do servidor.
-    api_key opcional disponível para uso administrativo direto via Swagger.
-
-    Resposta espelha TesteConexao (integracoes.types.ts):
-      { status, provedor, modelo?, mensagem }
-    """
     try:
         if body.provedor == "anthropic":
             key = body.api_key or os.getenv("ANTHROPIC_API_KEY")
@@ -592,7 +541,7 @@ async def testar_conexao(request: Request, body: TestarConexaoRequest):
                     "status": "ok",
                     "provedor": "anthropic",
                     "modelo": modelo,
-                    "mensagem": f"✓ Conexão com Anthropic bem-sucedida! Modelo: {modelo}"
+                    "mensagem": f"Conexão com Anthropic bem-sucedida! Modelo: {modelo}"
                 }
             err = resp.json()
             msg = err.get("error", {}).get("message", f"HTTP {resp.status_code}")
@@ -619,7 +568,7 @@ async def testar_conexao(request: Request, body: TestarConexaoRequest):
                     "status": "ok",
                     "provedor": "openai",
                     "modelo": modelo,
-                    "mensagem": f"✓ Conexão com OpenAI bem-sucedida! Modelo: {modelo}"
+                    "mensagem": f"Conexão com OpenAI bem-sucedida! Modelo: {modelo}"
                 }
             err = resp.json()
             msg = err.get("error", {}).get("message", f"HTTP {resp.status_code}")
@@ -637,11 +586,6 @@ async def testar_conexao(request: Request, body: TestarConexaoRequest):
 
 @app.post("/cache/limpar", tags=["Configuração"], dependencies=[Depends(verificar_secret)])
 async def limpar_cache():
-    """
-    Limpa todo o cache em memória.
-    Exige header: X-API-Secret
-    Consumido por: /api/ia/cache/route.ts (POST { acao: "limpar" })
-    """
     count = len(_cache)
     _cache.clear()
     return {
@@ -652,14 +596,6 @@ async def limpar_cache():
 
 @app.get("/cache/stats", tags=["Configuração"], dependencies=[Depends(verificar_secret)])
 async def cache_stats():
-    """
-    Estatísticas do cache em memória.
-    Exige header: X-API-Secret
-    Consumido por: /api/ia/cache/route.ts (GET)
-
-    Resposta espelha StatsCache (integracoes.types.ts):
-      { total, validas, expiradas, ttl_horas }
-    """
     agora = time.time()
     validas = sum(1 for v in _cache.values() if agora - v["ts"] < CACHE_TTL)
     return {
@@ -675,12 +611,12 @@ async def cache_stats():
 async def on_startup():
     logger.info("=" * 60)
     logger.info(f"  Integracoes_IA v{VERSION} — Iniciado")
-    logger.info(f"  Anthropic : {'✓' if os.getenv('ANTHROPIC_API_KEY') else '✗ não configurado'}"
+    logger.info(f"  Anthropic : {'OK' if os.getenv('ANTHROPIC_API_KEY') else 'NAO CONFIGURADO'}"
                 f" | modelo: {os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6')}")
-    logger.info(f"  OpenAI    : {'✓' if os.getenv('OPENAI_API_KEY') else '✗ não configurado'}"
+    logger.info(f"  OpenAI    : {'OK' if os.getenv('OPENAI_API_KEY') else 'NAO CONFIGURADO'}"
                 f" | modelo: {os.getenv('OPENAI_MODEL', 'gpt-4o')}")
     logger.info(f"  Provedor  : {os.getenv('PROVEDOR_ATIVO', 'anthropic')}")
-    logger.info(f"  Secret    : {'✓ configurado' if API_SECRET else '✗ AUSENTE — risco de segurança!'}")
+    logger.info(f"  Secret    : {'configurado' if API_SECRET else 'AUSENTE'}")
     logger.info(f"  Cache TTL : {round(CACHE_TTL / 3600, 1)}h")
     logger.info(f"  CORS      : {', '.join(ALLOWED_ORIGINS)}")
     logger.info(f"  Docs      : /docs  |  /redoc")
@@ -693,6 +629,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=int(os.getenv("PORT", "3333")),
+        port=int(os.getenv("PORT", "8080")),
         reload=True
     )
