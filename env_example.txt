@@ -1,0 +1,52 @@
+# ============================================================
+#  Integracoes_IA v2.0.0 — Variáveis de Ambiente
+#  Renomeie este arquivo para .env para uso local
+#  Em produção: configure diretamente nas variáveis do Railway
+# ============================================================
+
+# ── Servidor ──────────────────────────────────────────────────
+PORT=3333
+ENVIRONMENT=production
+# Em desenvolvimento local use: ENVIRONMENT=development
+
+# ── Segurança ─────────────────────────────────────────────────
+# Gere com: python -c "import secrets; print(secrets.token_hex(32))"
+# Este valor deve ser IDÊNTICO ao IA_PROXY_SECRET no .env.local do Next.js
+API_SECRET=coloque_aqui_uma_chave_forte_gerada_aleatoriamente
+
+# ── CORS ──────────────────────────────────────────────────────
+# Em produção: apenas a URL do seu deploy Next.js no Vercel
+# As chamadas chegam do SERVIDOR Next.js, não do browser do usuário
+# Para Vercel: https://seuapp.vercel.app
+# Para desenvolvimento local: http://localhost:3000,http://localhost:3001
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3001,https://seuapp.vercel.app
+
+# ── Anthropic ─────────────────────────────────────────────────
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-sonnet-4-6
+
+# ── OpenAI ────────────────────────────────────────────────────
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o
+
+# ── Provedor padrão ───────────────────────────────────────────
+# Usado quando o frontend não especifica provedor na requisição
+# Valores aceitos: anthropic | openai
+PROVEDOR_ATIVO=anthropic
+
+# ── Cache ─────────────────────────────────────────────────────
+# Tempo de vida do cache em memória (segundos)
+# 86400 = 24 horas | 3600 = 1 hora | 0 = desabilitado
+CACHE_TTL_SECONDS=86400
+
+# ============================================================
+#  CORRESPONDÊNCIA COM O NEXT.JS (.env.local do Dyad)
+#
+#  Railway (este arquivo)     →  Next.js (.env.local)
+#  ─────────────────────────────────────────────────
+#  API_SECRET                 →  IA_PROXY_SECRET       (mesmo valor)
+#  [URL gerada pelo Railway]  →  IA_PROXY_URL          (sem NEXT_PUBLIC_!)
+#
+#  ATENÇÃO: No Next.js v2, NÃO use NEXT_PUBLIC_ nas variáveis de IA.
+#  Elas ficam apenas no servidor Next.js e nunca chegam ao browser.
+# ============================================================
