@@ -1,6 +1,6 @@
 # ============================================================
-#  Integracoes_IA — Microserviço Proxy IA  v2.0.0
-#  Suporte: Anthropic (Claude Sonnet 4.6) + OpenAI (GPT-4o)
+#  Integracoes_IA — Microserviço Proxy IA  v2.1.0
+#  Suporte: OpenAI (GPT-4o)
 #  Reforma Tributária · IBS/CBS · NCM · NBS · LC 214/2025
 #  Deploy: GitHub + Railway
 #
@@ -36,7 +36,7 @@ from slowapi.errors import RateLimitExceeded
 load_dotenv()
 
 # ── Versão ───────────────────────────────────────────────────
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 
 # ── Logging ──────────────────────────────────────────────────
 logging.basicConfig(
@@ -52,7 +52,7 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
     title="Integracoes_IA",
     description=(
-        "Microserviço proxy seguro para Anthropic (Claude) e OpenAI.\n"
+        "Microserviço proxy seguro para OpenAI (GPT-4o).\n"
         "Reforma Tributária IBS/CBS · NCM · NBS · LC 214/2025 · EC 132/2023\n\n"
         "**Atenção:** todas as rotas protegidas exigem o header `X-API-Secret`.\n"
         "O caller correto é o servidor Next.js — nunca o browser diretamente."
@@ -99,8 +99,8 @@ def cache_set(key: str, data: dict):
     logger.info(f"[CACHE SET] total={len(_cache)} entradas")
 
 
-def make_cache_key(descricao: str, tipo: str, provedor: str) -> str:
-    raw = f"{descricao.strip().lower()}|{tipo}|{provedor}"
+def make_cache_key(descricao: str, tipo: str) -> str:
+    raw = f"{descricao.strip().lower()}|{tipo}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -131,11 +131,10 @@ def verificar_secret(request: Request):
 class ClassificarRequest(BaseModel):
     descricao: str = Field(..., min_length=2, max_length=500)
     tipo: Literal["produto", "servico"]
-    provedor: Optional[Literal["anthropic", "openai"]] = Field(None)
 
 
 class TestarConexaoRequest(BaseModel):
-    provedor: Literal["anthropic", "openai"]
+    provedor: Literal["openai"]
     api_key: Optional[str] = Field(None)
 
 
@@ -287,40 +286,8 @@ Regras obrigatórias:
 
 
 # ══════════════════════════════════════════════════════════════
-# CHAMADAS ÀS APIs
+# CHAMADA À API OPENAI
 # ══════════════════════════════════════════════════════════════
-
-async def chamar_anthropic(prompt: str, api_key: str = None) -> dict:
-    key = api_key or os.getenv("ANTHROPIC_API_KEY")
-    model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-    if not key:
-        raise HTTPException(status_code=401, detail="API Key Anthropic não configurada")
-
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": key,
-                "anthropic-version": "2023-06-01"
-            },
-            json={
-                "model": model,
-                "max_tokens": 2000,
-                "messages": [{"role": "user", "content": prompt}]
-            }
-        )
-
-    if resp.status_code != 200:
-        err = resp.json()
-        msg = err.get("error", {}).get("message", f"HTTP {resp.status_code}")
-        raise HTTPException(status_code=resp.status_code, detail=f"Anthropic: {msg}")
-
-    data = resp.json()
-    text = "".join(b.get("text", "") for b in data.get("content", []))
-    text = text.replace("```json", "").replace("```", "").strip()
-    return json.loads(text)
-
 
 async def chamar_openai(prompt: str, api_key: str = None) -> dict:
     key = api_key or os.getenv("OPENAI_API_KEY")
@@ -361,31 +328,6 @@ async def chamar_openai(prompt: str, api_key: str = None) -> dict:
     return json.loads(text)
 
 
-async def classificar_com_fallback(prompt: str, provedor: str) -> tuple:
-    outro = "openai" if provedor == "anthropic" else "anthropic"
-    provedores = [provedor]
-
-    chave_outro = "OPENAI_API_KEY" if outro == "openai" else "ANTHROPIC_API_KEY"
-    if os.getenv(chave_outro):
-        provedores.append(outro)
-
-    ultimo_erro = None
-    for p in provedores:
-        try:
-            logger.info(f"[IA] Chamando {p}...")
-            fn = chamar_anthropic if p == "anthropic" else chamar_openai
-            resultado = await fn(prompt)
-            return resultado, p
-        except Exception as e:
-            logger.warning(f"[FALHA {p}] {e}")
-            ultimo_erro = e
-
-    raise HTTPException(
-        status_code=502,
-        detail=f"Todos os provedores falharam. Último erro: {ultimo_erro}"
-    )
-
-
 # ══════════════════════════════════════════════════════════════
 # ENDPOINTS
 # ══════════════════════════════════════════════════════════════
@@ -399,45 +341,43 @@ async def health():
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "cache_entradas": len(_cache),
         "provedores": {
-            "anthropic": {
-                "configurado": bool(os.getenv("ANTHROPIC_API_KEY")),
-                "modelo": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-            },
             "openai": {
                 "configurado": bool(os.getenv("OPENAI_API_KEY")),
                 "modelo": os.getenv("OPENAI_MODEL", "gpt-4o")
             }
         },
-        "provedor_ativo": os.getenv("PROVEDOR_ATIVO", "anthropic")
+        "provedor_ativo": "openai"
     }
 
 
 @app.post("/classificar", tags=["Tributário"], dependencies=[Depends(verificar_secret)])
 @limiter.limit("30/minute")
 async def classificar(request: Request, body: ClassificarRequest):
-    provedor = body.provedor or os.getenv("PROVEDOR_ATIVO", "anthropic")
-    cache_key = make_cache_key(body.descricao, body.tipo, provedor)
+    cache_key = make_cache_key(body.descricao, body.tipo)
 
     cached = cache_get(cache_key)
     if cached:
         return {
             "sucesso": True,
-            "provedor": provedor,
+            "provedor": "openai",
             "tipo": body.tipo,
             "resultado": cached,
             "cache": True
         }
 
     prompt = prompt_produto(body.descricao) if body.tipo == "produto" else prompt_servico(body.descricao)
-    resultado, provedor_usado = await classificar_com_fallback(prompt, provedor)
-    cache_set(cache_key, resultado)
 
-    logger.info(f"[OK] tipo={body.tipo} provedor={provedor_usado} desc={body.descricao[:50]}")
+    try:
+        resultado = await chamar_openai(prompt)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"OpenAI falhou: {e}")
+
+    cache_set(cache_key, resultado)
+    logger.info(f"[OK] tipo={body.tipo} provedor=openai desc={body.descricao[:50]}")
 
     return {
         "sucesso": True,
-        "provedor": provedor_usado,
-        "fallback": provedor_usado != provedor,
+        "provedor": "openai",
         "tipo": body.tipo,
         "resultado": resultado,
         "cache": False
@@ -453,8 +393,7 @@ async def classificar_lote(request: Request, body: List[ClassificarRequest]):
     resultados = []
 
     for i, item in enumerate(body):
-        provedor = item.provedor or os.getenv("PROVEDOR_ATIVO", "anthropic")
-        cache_key = make_cache_key(item.descricao, item.tipo, provedor)
+        cache_key = make_cache_key(item.descricao, item.tipo)
         cached = cache_get(cache_key)
 
         if cached:
@@ -463,7 +402,7 @@ async def classificar_lote(request: Request, body: List[ClassificarRequest]):
                 "descricao": item.descricao,
                 "tipo": item.tipo,
                 "sucesso": True,
-                "provedor": provedor,
+                "provedor": "openai",
                 "resultado": cached,
                 "cache": True
             })
@@ -472,15 +411,14 @@ async def classificar_lote(request: Request, body: List[ClassificarRequest]):
         prompt = prompt_produto(item.descricao) if item.tipo == "produto" else prompt_servico(item.descricao)
 
         try:
-            resultado, provedor_usado = await classificar_com_fallback(prompt, provedor)
+            resultado = await chamar_openai(prompt)
             cache_set(cache_key, resultado)
             resultados.append({
                 "indice": i,
                 "descricao": item.descricao,
                 "tipo": item.tipo,
                 "sucesso": True,
-                "provedor": provedor_usado,
-                "fallback": provedor_usado != provedor,
+                "provedor": "openai",
                 "resultado": resultado,
                 "cache": False
             })
@@ -514,73 +452,35 @@ async def classificar_lote(request: Request, body: List[ClassificarRequest]):
 @limiter.limit("10/minute")
 async def testar_conexao(request: Request, body: TestarConexaoRequest):
     try:
-        if body.provedor == "anthropic":
-            key = body.api_key or os.getenv("ANTHROPIC_API_KEY")
-            if not key:
-                return JSONResponse(
-                    status_code=400,
-                    content={"status": "erro", "provedor": "anthropic", "mensagem": "API Key Anthropic não informada"}
-                )
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "Content-Type": "application/json",
-                        "x-api-key": key,
-                        "anthropic-version": "2023-06-01"
-                    },
-                    json={
-                        "model": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
-                        "max_tokens": 5,
-                        "messages": [{"role": "user", "content": "ok"}]
-                    }
-                )
-            modelo = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
-            if resp.status_code == 200:
-                return {
-                    "status": "ok",
-                    "provedor": "anthropic",
-                    "modelo": modelo,
-                    "mensagem": f"Conexão com Anthropic bem-sucedida! Modelo: {modelo}"
-                }
-            err = resp.json()
-            msg = err.get("error", {}).get("message", f"HTTP {resp.status_code}")
+        key = body.api_key or os.getenv("OPENAI_API_KEY")
+        if not key:
             return JSONResponse(
                 status_code=400,
-                content={"status": "erro", "provedor": "anthropic", "mensagem": msg}
+                content={"status": "erro", "provedor": "openai", "mensagem": "API Key OpenAI não informada"}
             )
-
-        elif body.provedor == "openai":
-            key = body.api_key or os.getenv("OPENAI_API_KEY")
-            if not key:
-                return JSONResponse(
-                    status_code=400,
-                    content={"status": "erro", "provedor": "openai", "mensagem": "API Key OpenAI não informada"}
-                )
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(
-                    "https://api.openai.com/v1/models",
-                    headers={"Authorization": f"Bearer {key}"}
-                )
-            modelo = os.getenv("OPENAI_MODEL", "gpt-4o")
-            if resp.status_code == 200:
-                return {
-                    "status": "ok",
-                    "provedor": "openai",
-                    "modelo": modelo,
-                    "mensagem": f"Conexão com OpenAI bem-sucedida! Modelo: {modelo}"
-                }
-            err = resp.json()
-            msg = err.get("error", {}).get("message", f"HTTP {resp.status_code}")
-            return JSONResponse(
-                status_code=400,
-                content={"status": "erro", "provedor": "openai", "mensagem": msg}
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(
+                "https://api.openai.com/v1/models",
+                headers={"Authorization": f"Bearer {key}"}
             )
-
+        modelo = os.getenv("OPENAI_MODEL", "gpt-4o")
+        if resp.status_code == 200:
+            return {
+                "status": "ok",
+                "provedor": "openai",
+                "modelo": modelo,
+                "mensagem": f"Conexão com OpenAI bem-sucedida! Modelo: {modelo}"
+            }
+        err = resp.json()
+        msg = err.get("error", {}).get("message", f"HTTP {resp.status_code}")
+        return JSONResponse(
+            status_code=400,
+            content={"status": "erro", "provedor": "openai", "mensagem": msg}
+        )
     except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={"status": "erro", "provedor": body.provedor, "mensagem": str(e)}
+            content={"status": "erro", "provedor": "openai", "mensagem": str(e)}
         )
 
 
@@ -611,15 +511,12 @@ async def cache_stats():
 async def on_startup():
     logger.info("=" * 60)
     logger.info(f"  Integracoes_IA v{VERSION} — Iniciado")
-    logger.info(f"  Anthropic : {'OK' if os.getenv('ANTHROPIC_API_KEY') else 'NAO CONFIGURADO'}"
-                f" | modelo: {os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-6')}")
-    logger.info(f"  OpenAI    : {'OK' if os.getenv('OPENAI_API_KEY') else 'NAO CONFIGURADO'}"
+    logger.info(f"  OpenAI : {'OK' if os.getenv('OPENAI_API_KEY') else 'NAO CONFIGURADO'}"
                 f" | modelo: {os.getenv('OPENAI_MODEL', 'gpt-4o')}")
-    logger.info(f"  Provedor  : {os.getenv('PROVEDOR_ATIVO', 'anthropic')}")
-    logger.info(f"  Secret    : {'configurado' if API_SECRET else 'AUSENTE'}")
+    logger.info(f"  Secret : {'configurado' if API_SECRET else 'AUSENTE'}")
     logger.info(f"  Cache TTL : {round(CACHE_TTL / 3600, 1)}h")
-    logger.info(f"  CORS      : {', '.join(ALLOWED_ORIGINS)}")
-    logger.info(f"  Docs      : /docs  |  /redoc")
+    logger.info(f"  CORS  : {', '.join(ALLOWED_ORIGINS)}")
+    logger.info(f"  Docs  : /docs  |  /redoc")
     logger.info("=" * 60)
 
 
