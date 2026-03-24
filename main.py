@@ -36,7 +36,7 @@ from slowapi.errors import RateLimitExceeded
 load_dotenv()
 
 # ── Versão ───────────────────────────────────────────────────
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 
 # ── Logging ──────────────────────────────────────────────────
 logging.basicConfig(
@@ -147,14 +147,22 @@ def prompt_produto(produto: str) -> str:
 
 Produto: "{produto}"
 
-REGRA CRÍTICA — NCMs COMPARTILHADOS: Vários NCMs abrangem produtos distintos com cClassTrib
-e tratamentos tributários completamente diferentes. Exemplos reais obrigatórios:
+REGRA CRÍTICA — NCMs COMPARTILHADOS:
+Vários NCMs abrangem produtos distintos com cClassTrib e tratamentos tributários diferentes.
+Exemplos reais OBRIGATÓRIOS que você DEVE conhecer:
 - NCM 9619.00.00: absorventes (cClassTrib 200013, redução 100%) vs fraldas (cClassTrib 200035, redução 60%)
 - NCM 2201.10.00: água com gás vs água sem gás (regimes monofásicos distintos)
+- NCM 2202.10.00: refrigerantes (cClassTrib 200035, redução 60%, IS) vs sucos (cClassTrib 000001, integral) vs água saborizada (cClassTrib distinto)
 - NCM 3004.90.99: medicamentos genéricos vs referência (cClassTrib distintos)
 - NCM 0402.10.10: leite em pó integral vs desnatado
-Se o NCM for compartilhado, preencha OBRIGATORIAMENTE "variantesNCM" com TODOS os produtos
-que usam esse NCM e têm tributações DISTINTAS.
+
+INSTRUÇÃO ABSOLUTA PARA variantesNCM:
+1. Identifique QUANTOS produtos distintos usam este NCM com tributações diferentes
+2. O array variantesNCM deve ter EXATAMENTE (N-1) entradas, onde N = total de produtos distintos
+3. Se o NCM tem 3 produtos distintos → variantesNCM terá 2 entradas
+4. Se o NCM tem 4 produtos distintos → variantesNCM terá 3 entradas
+5. NUNCA retorne variantesNCM com menos entradas do que existem variantes reais
+6. Cada entrada DEVE ter todos os campos: produto, descricaoDiferenca, cst, cClassTrib, cClassTribDescricao, reducaoBC, aliqReduzidaIBS, aliqReduzidaCBS, aliqEfetivaTotal, isencao, fundamentoLegal
 
 Retorne SOMENTE JSON válido sem markdown:
 {{
@@ -304,13 +312,13 @@ async def chamar_openai(prompt: str, api_key: str = None) -> dict:
             },
             json={
                 "model": model,
-                "max_tokens": 2000,
+                "max_tokens": 4000,
                 "temperature": 0.1,
                 "response_format": {"type": "json_object"},
                 "messages": [
                     {
                         "role": "system",
-                        "content": "Especialista tributação brasileira Reforma Tributária LC 214/2025. Retorne SEMPRE JSON válido sem markdown."
+                        "content": "Especialista tributação brasileira Reforma Tributária LC 214/2025. Retorne SEMPRE JSON válido sem markdown. REGRA CRÍTICA: NUNCA truncar arrays — sempre incluir TODOS os elementos. Se variantesNCM tem N variantes reais, o array DEVE ter N entradas completas."
                     },
                     {"role": "user", "content": prompt}
                 ]
